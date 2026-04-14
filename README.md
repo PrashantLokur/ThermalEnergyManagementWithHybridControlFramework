@@ -1,6 +1,6 @@
 # Constrained Nonlinear MPC for Energy-Optimal Thermal Management of Heat-Pump BEVs
 
-[![MATLAB](https://img.shields.io/badge/MATLAB-R2023a%2B-blue)](https://www.mathworks.com/products/matlab.html)
+[![MATLAB](https://img.shields.io/badge/MATLAB-R2024b%2B-blue)](https://www.mathworks.com/products/matlab.html)
 [![CasADi](https://img.shields.io/badge/CasADi-3.6%2B-green)](https://web.casadi.org/)
 [![CoolProp](https://img.shields.io/badge/CoolProp-6.x-orange)](http://www.coolprop.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
