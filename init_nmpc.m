@@ -1,6 +1,7 @@
 function init_nmpc()
 
 addpath('/path/to/your/root');
+addpath('/path/to/your/root/Data');
 addpath('C:\Users\prashant.lokur\OneDrive - Zeekr\Prashant\Phd\casadi-3.7.1-windows64-matlab2018b'); %Casadi Path
 
 if ~exist('casadi.SX', 'class')
@@ -10,9 +11,9 @@ if ~exist('casadi.SX', 'class')
            'Then add it using: addpath(''<your_casadi_folder> in the init_nmpc file'')']);
 end
 
-if ~exist('py.CoolProp.CoolProp.PropsSI')
-    warning('CoolProp Python wrapper not found. Ensure CoolProp is installed: pip install CoolProp');
-end
+% if ~exist('py.CoolProp.CoolProp.PropsSI')
+%     warning('CoolProp Python wrapper not found. Ensure CoolProp is installed: pip install CoolProp');
+% end
 
 % 2) Load tuning/resampled data used by MPC (if you still rely on it)
 S = load('tuning_data_10.mat','resampled');
