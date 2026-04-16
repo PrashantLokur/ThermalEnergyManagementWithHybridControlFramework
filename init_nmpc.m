@@ -1,8 +1,9 @@
 function init_nmpc()
 
-addpath('/path/to/your/root');
-addpath('/path/to/your/root/Data');
-addpath('C:\Users\prashant.lokur\OneDrive - Zeekr\Prashant\Phd\casadi-3.7.1-windows64-matlab2018b'); %Casadi Path
+repoRoot = fileparts(mfilename('fullpath'));
+addpath(repoRoot);
+addpath(fullfile(repoRoot, 'Data'));
+addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
 
 if ~exist('casadi.SX', 'class')
     error('NMPC:missingDependency', ...
@@ -11,10 +12,21 @@ if ~exist('casadi.SX', 'class')
            'Then add it using: addpath(''<your_casadi_folder> in the init_nmpc file'')']);
 end
 
-% if ~exist('py.CoolProp.CoolProp.PropsSI')
-%     warning('CoolProp Python wrapper not found. Ensure CoolProp is installed: pip install CoolProp');
-% end
-
+try
+    val = py.CoolProp.CoolProp.PropsSI('C', 'T', 273.15, 'P', 101325, 'Air');
+    if ~isfinite(val) || val <= 0
+        error('CoolProp returned an invalid value.');
+    end
+    fprintf('CoolProp is installed and working (cp_air = %.2f J/kg/K)\n', val);
+catch ME
+    error('NMPC:missingDependency', ...
+          ['CoolProp Python wrapper not found or not working.\n', ...
+           'Ensure CoolProp is installed in your Python environment:\n', ...
+           '    pip install CoolProp\n', ...
+           'Also verify MATLAB is linked to the correct Python:\n', ...
+           '    pyenv\n\n', ...
+           'Original error: %s'], ME.message);
+end
 % 2) Load tuning/resampled data used by MPC (if you still rely on it)
 S = load('tuning_data_10.mat','resampled');
 assignin('base','resampled', S.resampled);

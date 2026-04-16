@@ -1,10 +1,30 @@
 function RunThermalComparison(varargin)
+repoRoot = fileparts(mfilename('fullpath'));
+addpath(repoRoot);
+addpath(fullfile(repoRoot, 'Data'));
+addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
+
+try
+    val = py.CoolProp.CoolProp.PropsSI('C', 'T', 273.15, 'P', 101325, 'Air');
+    if ~isfinite(val) || val <= 0
+        error('CoolProp returned an invalid value.');
+    end
+    fprintf('CoolProp is installed and working (cp_air = %.2f J/kg/K)\n', val);
+catch ME
+    error('NMPC:missingDependency', ...
+          ['CoolProp Python wrapper not found or not working.\n', ...
+           'Ensure CoolProp is installed in your Python environment:\n', ...
+           '    pip install CoolProp\n', ...
+           'Also verify MATLAB is linked to the correct Python:\n', ...
+           '    pyenv\n\n', ...
+           'Original error: %s'], ME.message);
+end
 
     %% ── Model name ───────────────────────────────────────────────────────
     MODEL = 'ElectricVehicleThermalManagementWithHeatPump';
 
     %% ── Ensure matlab2tikz is on path ───────────────────────────────────
-    matlab2tikz_path = 'C:\Users\prashant.lokur\OneDrive - Zeekr\Prashant\Phd\01_PaperTask\12_OJVT\ToUpload\matlab2tikz';
+    matlab2tikz_path = 'ThermalEnergyManagementWithHybridControlFramework/PlotingFunctions/matlab2tikz';
 
     if exist('matlab2tikz', 'file') ~= 2 && exist('matlab2tikz', 'file') ~= 6
         if exist(matlab2tikz_path, 'dir')
