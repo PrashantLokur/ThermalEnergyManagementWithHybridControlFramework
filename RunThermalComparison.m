@@ -2,6 +2,7 @@ function RunThermalComparison(varargin)
 repoRoot = fileparts(mfilename('fullpath'));
 addpath(repoRoot);
 addpath(fullfile(repoRoot, 'Data'));
+addpath(fullfile(repoRoot, 'Source Files'));
 addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
 
 try
