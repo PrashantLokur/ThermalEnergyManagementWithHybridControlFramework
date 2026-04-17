@@ -777,12 +777,13 @@ if ~st.success
                     u_cmd(1), u_cmd(2), u_cmd(3), u_cmd(4), u_cmd(5), u_cmd(6));
 
         else
+            % if LQR data unavailable, fall back to last input
             u_cmd = min(umax, max(umin, u_last));
             warning('coreLQR:noLQRFallback', ...
                     '[coreLQR] NMPC failed and no valid LQR fallback available. Using u_last.');
         end
     else
-
+        % for acceptable but not fully converged cases, keep best iterate
         u_cmd = min(umax, max(umin, u_cmd));
         fprintf('[coreLQR] Using best iterate (status=%s, iter=%d)\n', ...
                 char(st.return_status), double(st.iter_count));
@@ -930,7 +931,7 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     end
 
     K_recompute     = 50;
-    dT_threshold    = 1.5;    % K 
+    dT_threshold    = 1.5;    % K  — retrigger if ambient shifts by this much
     dTref_threshold = 0.5;    % K  — retrigger if reference shifts by this much
 
     if isempty(step_counter), step_counter = 0; end
@@ -996,7 +997,7 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
         %% Input regularisati
         u_reg = 1e-4 * sumsqr(uT_sym);
 
-   
+        %% Cabin tracking weight in terminal NLP cost
         w_cabT = max(1e3, 1e3 * w.cab);
 
         switch tref_mode

@@ -1,9 +1,6 @@
 function init_nmpc()
 % Runs once when model initializes
-% clear MPCController_step_coreLQRNew
-% delete('nmpc_warm_cache.mat')
-% 1) CasADi path
-% addpath('C:\Prashant\Prashant\Phd\casadi-3.7.1-windows64-matlab2018b');
+
 addpath('C:\Users\prashant.lokur\OneDrive - Zeekr\Prashant\Phd\casadi-3.7.1-windows64-matlab2018b');
 
 % 2) Load tuning/resampled data used by MPC (if you still rely on it)
@@ -20,12 +17,11 @@ nx = 9;      % number of states
 nu = 6;      % number of control inputs
 
 MPC_INPUT_LEN = nx + 6*N + 3;
-% In init_nmpc.m
+
 N_MAX = N;   % maximum horizon — sets fixed Simulink signal sizes
 assignin('base', 'N_MAX', N_MAX);
 
 ControlSampleTime = Ts; 
-
 
 % Guard: N must never exceed N_MAX
 if N > N_MAX
@@ -34,8 +30,6 @@ if N > N_MAX
 end
 
 
-% Assign all to base workspace as plain doubles
-%  (Simulink signal size fields accept plain doubles or Simulink.Parameter)
 assignin('base', 'N',             N);
 assignin('base', 'Ts',            Ts);
 assignin('base', 'nx',            nx);
