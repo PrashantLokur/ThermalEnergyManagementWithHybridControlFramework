@@ -1117,20 +1117,20 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     B = full(B);
 
     %% Print time constants
-    tau_diag    = -(M*h) ./ log(max(abs(diag(A)), 1e-10));
-    state_names = {'motT','invT','dcdcT','SOC','batT','p_in','p_out','cabIntT','cabAirT'};
-    fprintf('[terminal] State time constants:\n');
-    for i = 1:numel(state_names)
-        if A(i,i) > 1.0
-            lbl = '<- UNSTABLE';
-        elseif tau_diag(i) > 3000
-            lbl = '(integrator)';
-        else
-            lbl = '';
-        end
-        fprintf('  %-8s  tau=%8.1f s  A(%d,%d)=%+.4f  %s\n', ...
-                state_names{i}, tau_diag(i), i, i, A(i,i), lbl);
-    end
+    % tau_diag    = -(M*h) ./ log(max(abs(diag(A)), 1e-10));
+    % state_names = {'motT','invT','dcdcT','SOC','batT','p_in','p_out','cabIntT','cabAirT'};
+    % fprintf('[terminal] State time constants:\n');
+    % for i = 1:numel(state_names)
+    %     if A(i,i) > 1.0
+    %         lbl = '<- UNSTABLE';
+    %     elseif tau_diag(i) > 3000
+    %         lbl = '(integrator)';
+    %     else
+    %         lbl = '';
+    %     end
+    %     fprintf('  %-8s  tau=%8.1f s  A(%d,%d)=%+.4f  %s\n', ...
+    %             state_names{i}, tau_diag(i), i, i, A(i,i), lbl);
+    % end
 
     %% ── Schur stabilisation for DARE ─────────────────────────────────────
     rho_A = max(abs(eig(A)));
