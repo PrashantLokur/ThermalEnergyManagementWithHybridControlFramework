@@ -87,7 +87,7 @@ delete('nmpc_warm_cache.mat')
 ## NMPC Overview
 
 - **Solver:** IPOPT with exact Hessian
-- **Linear solver:** MA97 (or MUMPS)
+- **Linear solver:** MA97 
 - **Horizon:** N = 30 steps, Δt = 1 s
 - **States (9):** Motor, inverter, DC-DC temperatures; SOC; battery temperature; refrigerant pressures (low/high); cabin interior and air temperatures
 - **Inputs (6):** Compressor speed, blower flow, motor pump speed, battery pump speed, heater power, radiator fan speed
