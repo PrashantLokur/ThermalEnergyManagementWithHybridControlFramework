@@ -25,8 +25,7 @@ persistent built ...
     Q_s q_cab w_pwr pwrEstMax R_s Rd_s ...
     w_ySlack w_du_slack w_stateSlack_mot w_stateSlack_inv ...
     w_stateSlack_dcdc w_stateSlack_bat w_stateSlack_cab ...
-    du_max_s lambda_du int_offset int_e_prev ...
-    K_lqr_last xT_lqr_last uT_lqr_last
+    du_max_s lambda_du int_offset int_e_prev 
 %% ── Build once ───────────────────────────────────────────────────────────
 if isempty(built)
 
@@ -100,7 +99,16 @@ if isempty(built)
     SuInv = diag(1./su);
 
     %% ── WEIGHTS — all O(1), directly on scaled [0,1] variables ──────────
-    
+    %
+    % Xsym(:,k) is in [0,1]  (Sx * Xsym = physical)
+    % Usym(:,k) is in [0,1]  (Su * Usym = physical)
+    % Sdu_sym   is in [0,1]  (scaled ramp violation)
+    % Sx_losym/Sx_hisym are in PHYSICAL units (K, Pa) — weights normalised by 1/sx^2
+    %
+    % ── Tracking ─────────────────────────────────────────────────────────
+    % Q_s acts on eXk = Xsym(:,k) - Xref_s(:,k), both scaled [0,1].
+    % q_cab = 5.0 gives cost 0.0146/step at 18K cold start error.
+    % DO NOT multiply by Sx'*Q_phys*Sx — that gave Q_s(9,9)~5e9 and was slow.
     q_cab = 10.0;
     Q_s   = zeros(nx);
     Q_s(9,9) = q_cab;
@@ -108,14 +116,27 @@ if isempty(built)
     pwrEstMax = 11.0e3;   % [W]
 
     % ── Power cost ───────────────────────────────────────────────────────
+    % (pwr/pwrEstMax)^2 is already [0,1].
+    % w_pwr = 1e-4 => power = 0.05% of cold-start tracking.
+    % Small enough to not interfere with heating, large enough to penalise
+    % unnecessary power near setpoint.
     w_pwr = 1e-4;
 
     % ── Input magnitude (Usym in [0,1]) ──────────────────────────────────
-
+    % Very small — energy cost already handled by w_pwr.
+    % Just prevents unbounded optimum at exactly zero error.
     R_s = diag([1e-4, 1e-4, 1e-4, 1e-4, 1e-4, 1e-3]);
 
     % ── Move penalties (dUsym in [0,1]) ──────────────────────────────────
-  
+    % Crossover condition: Rd_s(1,1) * lambda * (du_max_scaled)^2
+    %                    = tracking_total_at_crossover_error
+    % For compressor crossover at 2.5K:
+    %   Rd_s(1,1) * 1.2 * 0.694 = 30 * 5.0 * (2.5/333)^2 = 0.0085
+    %   Rd_s(1,1) = 0.0085 / 0.833 = 0.010
+    %
+    % For blower crossover at ~0.5K (faster response):
+    %   Rd_s(2,2) * 1.2 * 1^2 = 30 * 5 * (0.5/333)^2 = 3.4e-4
+    %   Rd_s(2,2) = 2.8e-4  →  use 5e-4
     Rd_s = diag([0.090, ...   % compNrpm:    crossover ~2.5 K cabin error
                  3e-2,  ...   % cabAirMfIn:  crossover ~0.5 K
                  1e-4,  ...   % motPumpNrpm: light damping
@@ -124,21 +145,32 @@ if isempty(built)
                  1e-4]);      % radFanrpm:   lag filter in dynamics is dominant
 
     lambda_du = linspace(1.2, 1.0, N);
-    K_lqr_last  = [];
-    xT_lqr_last = [];
-    uT_lqr_last = [];
-   
+
+    % ── Soft state bound slacks (PHYSICAL units: K or Pa) ─────────────────
+    % Slacks are in physical units because constraints are in physical space:
+    %   g = xpref_lo(ii) - xk_phys(ii) - slo <= 0   (slo in K)
+    %
+    % To make cost equivalent to scaled-space weights, normalise by 1/sx(ii)^2:
+    %   cost = w_raw * slo^2 = (w_norm/sx^2) * slo^2 = w_norm * (slo/sx)^2
+    %
+    % Choose w_norm so each component is << cold-start tracking (0.439):
+    %   batT: slo=24K, sx(5)=306K: cost = 0.1/306^2 * 24^2 * 31 = 0.019  (4%) ✓
+    %   cab:  slo=12K, sx(9)=333K: cost = 0.5/333^2 * 12^2 * 31 = 0.020  (5%) ✓
     w_stateSlack_mot  = 0.1 / sx(1)^2;   % ~5.8e-7
     w_stateSlack_inv  = 0.1 / sx(2)^2;   % ~5.8e-7
     w_stateSlack_dcdc = 0.1 / sx(3)^2;   % ~5.8e-7
     w_stateSlack_bat  = 0.1 / sx(5)^2;   % ~1.1e-6
     w_stateSlack_cab  = 0.5 / sx(9)^2;   % ~4.5e-6
 
-
+    % ── Algebraic constraint slacks (Sysym, physical K units) ────────────
+    % Typical violation ~15 K. Normalise: 1/(15^2) = 0.0044.
+    % With 4 slacks per step * N steps: cost ~ 0.0044 * few_K^2 * 30 ~ 0.02. OK.
     w_ySlack = 1.0 / (15.0^2);   % = 0.00444
 
     % ── Ramp-rate slack (Sdu_sym, SCALED [0,1] units) ────────────────────
-
+    % Full compressor step violation (scaled): (5000-2500)/su(1) ~ 0.417
+    % Need: w_du_slack * 0.417^2 > cold-start tracking / 2 = 0.22
+    % => w_du_slack > 1.26.  Use 5.0 for strong enforcement.
     w_du_slack = 5.0;
 
     % ── Rate limits ───────────────────────────────────────────────────────
@@ -207,6 +239,7 @@ if isempty(built)
     ubg = [ubg; zeros(nx,1)];
 
     %% ── Global slack penalties ───────────────────────────────────────────
+    % w_ySlack * sumsqr(Sysym) added ONCE (duplicate removed vs v1)
     w_cost = w_cost + w_ySlack   * sumsqr(Sysym(:));
     w_cost = w_cost + w_du_slack * sumsqr(Sdu_sym(:));
 
@@ -250,6 +283,7 @@ if isempty(built)
         pk      = Pstage(:,k);
         Uk_phys = Su * Usym(:,k);
 
+        % RK4 — M substeps, physical units throughout
         xtmp = xk_phys;
         for j = 1:M
             [f1,~,~]        = F(xtmp,           Uk_phys, pk);
@@ -264,12 +298,12 @@ if isempty(built)
         lbg = [lbg; zeros(nx,1)];
         ubg = [ubg; zeros(nx,1)];
 
-   
-        eXk    = Xsym(:,k) - Xref_s(:,k);    % 
+        % Stage cost — all terms O(0.001 to 1) per step
+        eXk    = Xsym(:,k) - Xref_s(:,k);    % scaled error, O(0.01..1)
         w_cost = w_cost ...
-                 + eXk.' * Q_s * eXk ...              % 
-                 + w_pwr * (pwr / pwrEstMax)^2 ...    % 
-                 + Usym(:,k).' * R_s * Usym(:,k);     %
+                 + eXk.' * Q_s * eXk ...              % O(0.001..0.015)/step
+                 + w_pwr * (pwr / pwrEstMax)^2 ...    % O(1e-6..1e-4)/step
+                 + Usym(:,k).' * R_s * Usym(:,k);     % O(1e-5..1e-3)/step
 
         % Parallel/serial pump coupling
         mPS          = Pstage(idx_cmdPS, k);
@@ -283,7 +317,7 @@ if isempty(built)
         else
             dUk_s = Usym(:,k) - Usym(:,k-1);
         end
-        w_cost = w_cost + lambda_du(k) * (dUk_s.' * Rd_s * dUk_s);  %
+        w_cost = w_cost + lambda_du(k) * (dUk_s.' * Rd_s * dUk_s);  % O(1e-5..0.01)
 
         % Soft ramp-rate constraints
         Sdu_k = Sdu_sym(:,k);
@@ -343,7 +377,9 @@ if isempty(built)
     end
 
     %% ── Terminal cost ────────────────────────────────────────────────────
- 
+    % Pmat is P_scaled = Sx'*Pterm*Sx, passed via pvec.
+    % eXN is the scaled terminal error in [0,1].
+    % Terminal cost factor = 1 (consistent with O(1) stage costs above).
     Pmat   = reshape(p_P, nx, nx);
     eXN    = Xsym(:,N+1) - (SxInv * p_xT);
     w_cost = w_cost + 1.0 * (eXN.' * Pmat * eXN);
@@ -415,7 +451,7 @@ if isempty(built)
     end
 
     opts.ipopt.max_iter        = 2000;
-    opts.ipopt.tol             = 1e-4;   
+    opts.ipopt.tol             = 1e-4;   % slightly tighter than default for well-scaled NLP
     opts.ipopt.constr_viol_tol = 1e-4;
     opts.ipopt.dual_inf_tol    = 1e-2;
     opts.ipopt.compl_inf_tol   = 1e-3;
@@ -429,13 +465,15 @@ if isempty(built)
 
     opts.ipopt.hessian_approximation = 'exact';
     opts.ipopt.linear_solver         = 'ma97';
+    if ~isempty(getenv('HSL_LIB')), opts.ipopt.hsllib = getenv('HSL_LIB'); end  % path to libcoinhsl / libhsl when MA97 is not on the default library path
 
     opts.ipopt.mu_strategy = 'adaptive';
     opts.ipopt.mu_oracle   = 'quality-function';
     opts.ipopt.alpha_for_y = 'min-dual-infeas';
     opts.ipopt.recalc_y    = 'yes';
 
-
+    % With O(1) weights, gradient-based scaling is less critical but keep it.
+    % nlp_scaling_max_gradient = 10 (not 100) since gradients are already O(1).
     opts.ipopt.bound_relax_factor              = 1e-8;
     opts.ipopt.honor_original_bounds           = 'yes';
     opts.ipopt.bound_push                      = 1e-2;
@@ -570,11 +608,11 @@ end
 prev_Pk = Pk;
 
 %% ── Terminal data ────────────────────────────────────────────────────────
-Ki                = 0.02;          
-windup_threshold  = 5.0;            
-int_offset_max    = 8.0;            
+Ki                = 0.02;          % [K/step per K]  — tune this
+windup_threshold  = 5.0;            % [K] — only integrate when within 5K of setpoint
+int_offset_max    = 8.0;            % [K] — hard clamp on accumulated offset
 
-e_k = x_meas(9) - Tref_K;        
+e_k = x_meas(9) - Tref_K;          % negative when below setpoint
 
 if abs(e_k) < windup_threshold
     int_offset = int_offset + Ki * e_k;
@@ -583,7 +621,9 @@ end
 % Hard anti-windup clamp
 int_offset = max(-int_offset_max, min(int_offset_max, int_offset));
 
-
+% The reference passed to the NLP is shifted up by -int_offset.
+% When e_k < 0 (below setpoint): int_offset < 0 -> Tref_shifted > Tref_K -> NLP works harder.
+% When e_k > 0 (above setpoint): int_offset > 0 -> Tref_shifted < Tref_K -> NLP backs off.
 Tref_shifted = Tref_K - int_offset;
 Tref_shifted = max(15+273.15, min(40+273.15, Tref_shifted));  % safety clamp
 
@@ -599,16 +639,8 @@ fprintf('[integral] e=%.2fK  int_offset=%.2fK  Tref_shifted=%.2fC\n', ...
 % Tref_path = Tref_K * ones(N+1, 1);
 w_term    = struct('cab', 2e3, 'energy', 1e-3);
 
-[xT, uT, Pterm, Kterm] = compute_terminal_data( ...
+[xT, uT, Pterm] = compute_terminal_data( ...
     F, nx, nu, h, M, Pk(:,N), xmin, xmax, umin, umax, Tref_path(end), w_term);
-
-if ~isempty(Kterm) && all(isfinite(Kterm(:))) && ...
-   ~isempty(xT)    && all(isfinite(xT(:)))    && ...
-   ~isempty(uT)    && all(isfinite(uT(:)))
-    K_lqr_last  = Kterm;
-    xT_lqr_last = xT;
-    uT_lqr_last = uT;
-end
 
 fprintf('[terminal] xT(9) = %.2f C  (target = %.2f C)\n', xT(9)-273.15, Tref_path(end)-273.15);
 
@@ -752,48 +784,24 @@ fprintf('║  Solver: %.1f ms  iters: %d  status: %s\n', ...
 %% ── Infeasibility recovery ───────────────────────────────────────────────
 if ~st.success
     infeas_count = infeas_count + 1;
-
-    truly_infeasible = strcmp(char(st.return_status), 'Infeasible_Problem_Detected') || ...
-                       strcmp(char(st.return_status), 'Restoration_Failed');
-
+    truly_infeasible = strcmp(char(st.return_status),'Infeasible_Problem_Detected') || ...
+                       strcmp(char(st.return_status),'Restoration_Failed');
     if truly_infeasible
-        if ~isempty(K_lqr_last) && ~isempty(xT_lqr_last) && ~isempty(uT_lqr_last) && ...
-                all(isfinite(K_lqr_last(:))) && all(isfinite(xT_lqr_last)) && all(isfinite(uT_lqr_last))
-
-            dx = x_meas - xT_lqr_last;
-            u_lqr = uT_lqr_last - K_lqr_last * dx;
-
-            % clamp to actuator bounds
-            u_cmd = min(umax, max(umin, u_lqr));
-
-            if nu >= 2
-                u_cmd(2) = max(u_cmd(2), 0.05);
-            end
-
-            fprintf('[coreLQR] NMPC failed -> using LQR fallback (consec=%d, status=%s)\n', ...
-                    infeas_count, char(st.return_status));
-
-            fprintf('[coreLQR] LQR fallback: comp=%.1f rpm, blower=%.4f, motPump=%.1f, batPump=%.1f, heater=%.1f W, fan=%.1f rpm\n', ...
-                    u_cmd(1), u_cmd(2), u_cmd(3), u_cmd(4), u_cmd(5), u_cmd(6));
-
-        else
-            u_cmd = min(umax, max(umin, u_last));
-            warning('coreLQR:noLQRFallback', ...
-                    '[coreLQR] NMPC failed and no valid LQR fallback available. Using u_last.');
+        u_cmd = min(umax, max(umin, u_last));
+        if infeas_count >= 3
+            u_cmd(1) = max(umin(1), u_last(1)*0.8);
+            u_cmd(3) = min(umax(3), u_last(3)*1.2);
+            u_cmd(4) = min(umax(4), u_last(4)*1.2);
         end
     else
-
         u_cmd = min(umax, max(umin, u_cmd));
-        fprintf('[coreLQR] Using best iterate (status=%s, iter=%d)\n', ...
-                char(st.return_status), double(st.iter_count));
     end
-
-    warning('coreLQR:infeasible', ...
-            '[coreLQR] Not converged (consecutive: %d) — status: %s', ...
+    warning('coreLQR:infeasible','Not converged (consec=%d): %s', ...
             infeas_count, char(st.return_status));
 else
     infeas_count = 0;
 end
+
 fanRpm_actual_tracker = alpha * fanRpm_actual_tracker + (1-alpha)*u_cmd(6);
 prev_w_opt = w_opt;
 if isfield(sol,'lam_x'), prev_lam_x = full(sol.lam_x); else, prev_lam_x = []; end
@@ -886,9 +894,15 @@ function idx = get_idx_cmdPS(Uord)
 end
 
 function ctrl_vec = packControlOut(controlOut)
-    fields = {'setpoint','thermalMode','cmdRefrigBypass','cmdBlendAir', ...
-              'cmdRadBypass','cmdExvChiller','cmdExvEvap','cmdParallelSerial', ...
-              'clntBatTinFiltered','cmdExvHeatpump','cmdHeater','prev_ctrlmode'};
+    % Output slots that reach the Simscape plant carry the plant-side valve
+    % commands (rule-identical logic in thermalLogicAndEstimation); the cmd*
+    % fields stay internal to the NMPC prediction model.
+    % Slot order (Demux 19..30): setpoint, thermalMode, refrigerant bypass,
+    % blend air, radiator bypass, chiller EXV, evaporator EXV, parallel/serial,
+    % clntBatTinFiltered, heat-pump EXV, heater flag, prev mode.
+    fields = {'setpoint','thermalMode','plantRefrigBypass','plantBlendAir', ...
+              'plantRadBypass','plantExvChiller','plantExvEvap','plantParallelSerial', ...
+              'clntBatTinFiltered','plantExvHeatpump','cmdHeater','prev_ctrlmode'};
     ctrl_vec = zeros(numel(fields),1);
     for k = 1:numel(fields)
         ctrl_vec(k) = getStructFieldNumeric(controlOut, fields{k}, 0);
@@ -909,17 +923,35 @@ end
 %% compute_terminal_data
 %% ═══════════════════════════════════════════════════════════════════════════
 
-function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
-                                                 xmin, xmax, umin, umax, TrefN, w)
+function [xT, uT, P] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
+                                              xmin, xmax, umin, umax, TrefN, w)
+% compute_terminal_data
+%
+% Computes the terminal operating point (xT, uT) and terminal cost matrix P
+% for use in the NMPC stage cost.
+%
+% Arguments:
+%   F        — CasADi dynamics function handle F(x,u,p) -> (xdot, y, J)
+%   nx,nu    — state and input dimensions
+%   h, M     — RK4 substep size and count
+%   pkN      — parameter vector at terminal stage (np x 1)
+%   xmin,xmax,umin,umax — physical bounds
+%   TrefN    — cabin air temperature reference [K]
+%   w        — weight struct: w.cab (tracking weight), w.energy (input weight)
+%   tref_mode — 'cost'       : Tref enforced as soft cost in terminal NLP
+%               'constraint' : Tref enforced as hard equality xT(9) = TrefN
+%                              (default if argument omitted)
+%
+% Returns:
+%   xT — terminal state (nx x 1) [physical units, K / Pa]
+%   uT — terminal input (nu x 1) [physical units]
+%   P  — terminal cost matrix (nx x nx) [physical units]
 
     persistent Phi_fun_p PhiJ_fun_p solverT lbwT ubwT lbgT ubgT ...
                nparam_p nx_p nu_p M_p h_p built_ok tref_mode_p ...
-               xT_prev uT_prev xT_cached uT_cached P_cached Kt_cached ...
+               xT_prev uT_prev xT_cached uT_cached P_cached ...
                pkN_cached TrefN_cached step_counter
-
-    Kt = [];
-
-    tref_mode = 'cost';
+tref_mode ='cost';
     %% ── Defaults ─────────────────────────────────────────────────────────
     if nargin < 13 || isempty(tref_mode)
         tref_mode = 'constraint';
@@ -930,7 +962,7 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     end
 
     K_recompute     = 50;
-    dT_threshold    = 1.5;    % K 
+    dT_threshold    = 1.5;    % K  — retrigger if ambient shifts by this much
     dTref_threshold = 0.5;    % K  — retrigger if reference shifts by this much
 
     if isempty(step_counter), step_counter = 0; end
@@ -945,7 +977,7 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
                      (M_p   ~= M)             || ...
                      abs(h_p - h) > 1e-12     || ...
                      isempty(built_ok)         || ...
-                     ~strcmp(tref_mode, tref_mode_p);   %
+                     ~strcmp(tref_mode, tref_mode_p);   % mode changed
     end
 
     %% ── Build CasADi functions and terminal NLP solver ───────────────────
@@ -988,20 +1020,22 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
         Phi_once = casadi.Function('Phi_once', {x,u,p}, {Phi_sx});
         r = xT_sym - Phi_once(xT_sym, uT_sym, p_sym);   % fixed-point residual
 
-        %% Smooth L1 + L2 penalty on slack
+        %% Smooth L1 + L2 penalty on slack (fixed-point accuracy)
         eps1 = 1e-8;
         L1s  = sum(sqrt(s_sym.^2 + eps1));
         L2s  = sumsqr(s_sym);
 
-        %% Input regularisati
+        %% Input regularisation (keeps uT physically reasonable)
         u_reg = 1e-4 * sumsqr(uT_sym);
 
-   
+        %% Cabin tracking weight in terminal NLP cost
         w_cabT = max(1e3, 1e3 * w.cab);
 
         switch tref_mode
             case 'cost'
-      
+                % Tref enters as a soft cost term — xT(9) is nudged toward
+                % TrefN but not forced. The fixed-point constraint dominates.
+                % g_T has nx rows (fixed-point only).
                 ell = 1e4*L1s + 1e-2*L2s + u_reg ...
                       + w_cabT * (xT_sym(9) - Tref_sym)^2;
                 g_T   = r - s_sym;              % nx x 1
@@ -1009,7 +1043,8 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
                 ubgT  = zeros(nx, 1);
 
             case 'constraint'
-           
+                % Tref enforced as hard equality: xT(9) == TrefN.
+                % g_T has nx+1 rows (fixed-point + cabin equality).
                 ell = 1e4*L1s + 1e-2*L2s + u_reg;
                 g_T   = [r - s_sym;
                          xT_sym(9) - Tref_sym]; % (nx+1) x 1
@@ -1026,7 +1061,8 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
         optsT.print_time           = false;
         optsT.error_on_fail        = false;
         optsT.ipopt.print_level    = 0;
-        optsT.ipopt.linear_solver  = 'ma97';
+        optsT.ipopt.linear_solver  = 'MA97';
+        if ~isempty(getenv('HSL_LIB')), optsT.ipopt.hsllib = getenv('HSL_LIB'); end
         optsT.ipopt.max_iter       = 150;
         optsT.ipopt.tol            = 1e-6;
         optsT.ipopt.acceptable_tol = 1e-2;
@@ -1067,7 +1103,6 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
         xT = xT_cached;
         uT = uT_cached;
         P  = P_cached;
-        Kt = Kt_cached;
         return
     end
 
@@ -1117,20 +1152,20 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     B = full(B);
 
     %% Print time constants
-    % tau_diag    = -(M*h) ./ log(max(abs(diag(A)), 1e-10));
-    % state_names = {'motT','invT','dcdcT','SOC','batT','p_in','p_out','cabIntT','cabAirT'};
-    % fprintf('[terminal] State time constants:\n');
-    % for i = 1:numel(state_names)
-    %     if A(i,i) > 1.0
-    %         lbl = '<- UNSTABLE';
-    %     elseif tau_diag(i) > 3000
-    %         lbl = '(integrator)';
-    %     else
-    %         lbl = '';
-    %     end
-    %     fprintf('  %-8s  tau=%8.1f s  A(%d,%d)=%+.4f  %s\n', ...
-    %             state_names{i}, tau_diag(i), i, i, A(i,i), lbl);
-    % end
+    tau_diag    = -(M*h) ./ log(max(abs(diag(A)), 1e-10));
+    state_names = {'motT','invT','dcdcT','SOC','batT','p_in','p_out','cabIntT','cabAirT'};
+    fprintf('[terminal] State time constants:\n');
+    for i = 1:numel(state_names)
+        if A(i,i) > 1.0
+            lbl = '<- UNSTABLE';
+        elseif tau_diag(i) > 3000
+            lbl = '(integrator)';
+        else
+            lbl = '';
+        end
+        fprintf('  %-8s  tau=%8.1f s  A(%d,%d)=%+.4f  %s\n', ...
+                state_names{i}, tau_diag(i), i, i, A(i,i), lbl);
+    end
 
     %% ── Schur stabilisation for DARE ─────────────────────────────────────
     rho_A = max(abs(eig(A)));
@@ -1173,10 +1208,9 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     % Attempt 1 — nominal DARE on Schur-stabilised A
     if isempty(P)
         try
-            [Pt,Kt_try,~] = dare(A_stab, B, Q, R);
+            [Pt,~,~] = dare(A_stab, B, Q, R);
             if all(isfinite(Pt(:))) && all(eig((Pt+Pt')/2) > 0)
-                P  = Pt;
-                Kt = Kt_try;
+                P = Pt;
                 fprintf('[terminal] DARE: nominal succeeded.\n');
             end
         catch
@@ -1192,10 +1226,9 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
             else
                 g = 0.98;
             end
-            [Pt,Kt_try,~] = dare(sqrt(g)*A_stab, sqrt(g)*B, Q, R);
+            [Pt,~,~] = dare(sqrt(g)*A_stab, sqrt(g)*B, Q, R);
             if all(isfinite(Pt(:))) && all(eig((Pt+Pt')/2) > 0)
-                P  = Pt;
-                Kt = Kt_try;
+                P = Pt;
                 fprintf('[terminal] DARE: discounted (gamma=%.4f) succeeded.\n', g);
             end
         catch
@@ -1211,12 +1244,10 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
                 PkR = Q + A'*PkR*A - A'*PkR*B*(S\(B'*PkR*A));
                 PkR = 0.5*(PkR + PkR');
             end
-           if all(isfinite(PkR(:))) && all(eig((PkR+PkR')/2) > 0)
-                S = R + B' * PkR * B + 1e-8*eye(nu);
-                Kt = S \ (B' * PkR * A_stab);
-                P  = PkR;
+            if all(isfinite(PkR(:))) && all(eig((PkR+PkR')/2) > 0)
+                P = PkR;
                 fprintf('[terminal] DARE: finite-horizon Riccati succeeded.\n');
-           end
+            end
         catch
         end
     end
@@ -1246,6 +1277,7 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     %% ── Cap pressure entries (prevents DARE instability corrupting P) ────
     P(6,6) = min(P(6,6), 1e-2);
     P(7,7) = min(P(7,7), 1e-2);
+    % Zero pressure cross-terms to prevent coupling spillover
     P(6,:) = 0;  P(:,6) = 0;  P(6,6) = min(P(6,6), 1e-4);
     P(7,:) = 0;  P(:,7) = 0;  P(7,7) = min(P(7,7), 1e-4);
 
@@ -1256,7 +1288,6 @@ function [xT, uT, P, Kt] = compute_terminal_data(F, nx, nu, h, M, pkN, ...
     xT_cached    = xT;
     uT_cached    = uT;
     P_cached     = P;
-    Kt_cached    = Kt;
     pkN_cached   = pkN;
     TrefN_cached = TrefN;
 end

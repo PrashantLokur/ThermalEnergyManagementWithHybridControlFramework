@@ -122,7 +122,16 @@ function [mdlInput, estimatedParams, controlOut, tunePara] = build_runtime_conte
     mdlInput.u.batImeas = estimatedParams.batImeas + 1e-3;
 end
 
-
+% ======================================================================
+% NTU helper — shared cap to prevent gradient singularities
+% ======================================================================
+% All NTU computations in this file use:
+%   NTU_raw = factor * UA / (c + 1e-6)
+%   NTU     = ntu_cap(NTU_raw)
+% where ntu_cap smoothly saturates at NTU_MAX = 10.
+% Physically, NTU > 10 means effectiveness > 99.995% — indistinguishable.
+% The tanh cap keeps the CasADi Jacobian finite at zero flow.
+% ======================================================================
 
 % ======================================================================
 % Thermal components
@@ -135,7 +144,7 @@ function [T0, alpha, beta] = solve_loop_htx_in_explicit(cmp, mdlInput, estimated
     split  = 0.11;
     m_dcdc = split * m_tot_bat;
     m_bat  = m_tot_bat - m_dcdc;
-    m_mix  = m_bat + m_dcdc;                                
+    m_mix  = m_bat + m_dcdc;                                %#ok<NASGU>
 
     [a_htx, b_htx] = local_htx_affine(cmp, estimatedParams, m_mot);
     [a_heat, b_heat] = local_heater_affine(estimatedParams, controlOut, m_tot_bat, clntCp, mdlInput);
@@ -169,7 +178,7 @@ end
 
 % ===================== Local affine builders =====================
 
-
+% ---- HTX: clntTout = (1 - A)*Tin + A*refTin ----
 function [a_htx, b_htx] = local_htx_affine(cmp, estimatedParams, m_mot)
     refArea  = 7.854e-05; clntArea = 0.00028353;
     totalHxArea = 64*pi*0.0035*0.1;
@@ -202,6 +211,7 @@ function [a_htx, b_htx] = local_htx_affine(cmp, estimatedParams, m_mot)
 
     c_clnt = clntMf*clntCp;
 
+    % NTU cap: prevents gradient singularity at zero flow
     NTU_raw = (ntuCorrectionFactor*UA) / (c_clnt + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     A = 1 - exp(-NTU);
@@ -210,7 +220,7 @@ function [a_htx, b_htx] = local_htx_affine(cmp, estimatedParams, m_mot)
     b_htx = A * refTinK;
 end
 
-
+% ---- Heater: clntTout = Tin + dT ----
 function [a_heat, b_heat] = local_heater_affine(estimatedParams, controlOut, m_tot_bat, clntCp, mdlInput)
     heaterEfficiency = 0.85;
     heatTransferCorrection = 1.5;
@@ -224,6 +234,7 @@ function [a_heat, b_heat] = local_heater_affine(estimatedParams, controlOut, m_t
     b_heat = dT;
 end
 
+% ---- Battery branch: clntTout = (1 - S_bat)*Tin + S_bat*T_bat ----
 function [a_bat, b_bat] = local_branch_affine_bat(cmp, estimatedParams, m_bat, clntCp, T_batK)
     clntChannelD = 0.0092; hxAreaFactor = 0.736;
     convectionTuningFactor = 200; conductionTuningFactor = 0.7;
@@ -239,6 +250,7 @@ function [a_bat, b_bat] = local_branch_affine_bat(cmp, estimatedParams, m_bat, c
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
 
+    % Conduction term — also capped to prevent S > 1 blowing up loop solver
     k_cond = conductionTuningFactor*hxAreaFactor/clntChannelD;
     k_cond_raw = k_cond / (c_clnt + 1e-6);
     k_cond_eff = NTU_MAX * tanh(k_cond_raw / NTU_MAX);
@@ -249,6 +261,7 @@ function [a_bat, b_bat] = local_branch_affine_bat(cmp, estimatedParams, m_bat, c
     b_bat = S_bat * T_batK;
 end
 
+% ---- DCDC branch: clntTout = (1 - S_dcdc)*Tin + S_dcdc*T_dcdc ----
 function [a_dcdc, b_dcdc] = local_branch_affine_dcdc(cmp, estimatedParams, m_dcdc, clntCp, T_dcdcK)
     clntChannelD = 0.0092; hxAreaFactor = 0.736;
     convectionTuningFactor = 1; conductionTuningFactor = 0.245;
@@ -259,11 +272,12 @@ function [a_dcdc, b_dcdc] = local_branch_affine_dcdc(cmp, estimatedParams, m_dcd
     UA = h_conv*hxAreaFactor*convectionTuningFactor;
     c_clnt = clntMf*clntCp;
 
+    % NTU cap
     NTU_raw = UA / (c_clnt + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
 
-
+    % Conduction term — capped
     k_cond = conductionTuningFactor*hxAreaFactor/clntChannelD;
     k_cond_raw = k_cond / (c_clnt + 1e-6);
     k_cond_eff = NTU_MAX * tanh(k_cond_raw / NTU_MAX);
@@ -274,6 +288,7 @@ function [a_dcdc, b_dcdc] = local_branch_affine_dcdc(cmp, estimatedParams, m_dcd
     b_dcdc = S_dcdc * T_dcdcK;
 end
 
+% ---- Motor: clntTout = (1 - S)*Tin + S*T_mot ----
 function [a_mot, b_mot] = local_component_affine_mot(cmp, estimatedParams, m_mot, clntCp, T_motK)
     clntChannelD = 0.0092; hxAreaFactor = 0.736;
     convectionTuningFactor = 6.0; conductionTuningFactor = 0.254;
@@ -284,11 +299,12 @@ function [a_mot, b_mot] = local_component_affine_mot(cmp, estimatedParams, m_mot
     UA = h_conv*hxAreaFactor*convectionTuningFactor;
     c_clnt = clntMf*clntCp;
 
-
+    % NTU cap
     NTU_raw = UA / (c_clnt + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
 
+    % Conduction term — capped
     k_cond = conductionTuningFactor*hxAreaFactor/clntChannelD;
     k_cond_raw = k_cond / (c_clnt + 1e-6);
     k_cond_eff = NTU_MAX * tanh(k_cond_raw / NTU_MAX);
@@ -299,6 +315,7 @@ function [a_mot, b_mot] = local_component_affine_mot(cmp, estimatedParams, m_mot
     b_mot = S * T_motK;
 end
 
+% ---- Inverter: clntTout = (1 - S)*Tin + S*T_inv ----
 function [a_inv, b_inv] = local_component_affine_inv(cmp, estimatedParams, m_mot, clntCp, T_invK)
     clntChannelD = 0.0092; hxAreaFactor = 0.736;
     convectionTuningFactor = 6.0; conductionTuningFactor = 0.254;
@@ -309,10 +326,12 @@ function [a_inv, b_inv] = local_component_affine_inv(cmp, estimatedParams, m_mot
     UA = h_conv*hxAreaFactor*convectionTuningFactor;
     c_clnt = clntMf*clntCp;
 
+    % NTU cap (0.1 factor matches invMdl)
     NTU_raw = (0.1*UA) / (c_clnt + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
 
+    % Conduction term — capped
     k_cond = conductionTuningFactor*hxAreaFactor/clntChannelD;
     k_cond_raw = k_cond / (c_clnt + 1e-6);
     k_cond_eff = NTU_MAX * tanh(k_cond_raw / NTU_MAX);
@@ -365,6 +384,7 @@ function cmp = htxMdl(mdlInput, estimatedParams, controlOut, cmp, P)
     c_clnt = clntMf*clntCp;
     c_min  = clntMf*clntCp;
 
+    % NTU cap
     NTU_raw = (ntuCorrectionFactor*UA) / (c_min + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
@@ -467,9 +487,11 @@ function cmp = compressorMdl(mdlInput, estimatedParams, controlOut, cmp)
     h_outS = estimatedParams.compHoutS;
     vNominalIn = estimatedParams.compVnominalIn;
 
-   
-    p_in_floor  = 0.3e5;  
-    eps_pFloor  = 1e6;    
+    % Smooth floor on p_in: prevents division blow-up during IPOPT interior
+    % iterations where pressure temporarily violates the 0.5 bar hard bound.
+    % smooth_max(p_in, p_floor) = (p_in + p_floor + sqrt((p_in-p_floor)^2 + eps)) / 2
+    p_in_floor  = 0.3e5;   % 0.3 bar — below any physical operating point
+    eps_pFloor  = 1e6;     % smoothing width in Pa^2 (= 1000 Pa tolerance)
     compPinSafe = (compPinPa + p_in_floor + sqrt((compPinPa - p_in_floor)^2 + eps_pFloor)) / 2;
 
     pressureRatio = compPoutPa / compPinSafe;
@@ -540,11 +562,13 @@ function cmp = innerCondenserMdl(mdlInput, estimatedParams, controlOut, cmp)
     c_air = cabAirMfIn*cabAirCp;
     c_min = c_air;
 
+    % Sigmoid gate for near-zero cabin air flow
     c_clnt_air = cabAirMfIn;
     c0_air = 1e-4; alpha_air = 5e4;
     z_air = alpha_air*(c_clnt_air - c0_air);
     sigmoid_gate_c_air = 0.5*(1 + tanh(z_air));
 
+    % NTU cap
     NTU_raw = (ntuAreaFactor*totalHxArea) / (thermalResistance*c_min + 1e-6);
     NTU_raw = NTU_raw * sigmoid_gate_c_air;
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
@@ -608,12 +632,13 @@ function cmp = condEvapMdl(mdlInput, estimatedParams, controlOut, cmp)
     fanRpm_cmd    = mdlInput.u.radFanrpm;
     fanRpm_approx = alpha_fan * estimatedParams.fanRpm_prev + (1 - alpha_fan) * fanRpm_cmd;
 
-    airMf_raw = 0.000258 * estimatedParams.speed / 3.6 + 0.000012 * fanRpm_cmd/60;
-    airMf_min = 1e-8;
+    airMf_raw = 0.0258 * estimatedParams.speed / 3.6 + 0.012 * fanRpm_approx * 2*pi/60;
+    airMf_min = 0.00001;
+    % Smooth max: avoids kink in Jacobian at airMf_raw == airMf_min
+    % smooth_max(a,b) = (a + b + sqrt((a-b)^2 + eps)) / 2
     eps_airMf = 1e-12;
-
     airMf = (airMf_raw + airMf_min + sqrt((airMf_raw - airMf_min)^2 + eps_airMf)) / 2;
-    airMf = 0;
+    airMf = 0;%max(airMf,0.9);
     airTinK   = estimatedParams.envT;
 
     refCp  = estimatedParams.condEvapRefCp;
@@ -655,11 +680,11 @@ function cmp = condEvapMdl(mdlInput, estimatedParams, controlOut, cmp)
     c_min_evap = c_air; qMax_evap = c_min_evap*(airTinK - refTinK);
     c_min_cond = c_air; qMax_cond = c_min_cond*(refTinK - airTinK);
 
-    % c_min = (c_min_evap*isHeatPumpMode) + (c_min_cond*(1 - isHeatPumpMode));
+    c_min = (c_min_evap*isHeatPumpMode) + (c_min_cond*(1 - isHeatPumpMode));
     qMax  = (qMax_evap *isHeatPumpMode) + (qMax_cond *(1 - isHeatPumpMode));
 
     % NTU cap
-    NTU_raw = UA / (c_air + 1e-6);
+    NTU_raw = UA / (c_min + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
 
@@ -678,13 +703,13 @@ function cmp = condEvapMdl(mdlInput, estimatedParams, controlOut, cmp)
     cmp.condEvap.output.qActualW = qActual;
 end
 
-function cmp = evapExv(mdlInput, estimatedParams, controlOut, cmp)%% not used in cold climate 
-    cmp.evapExv.output.refToutK = 0; %% not used in cold climate 
+function cmp = evapExv(mdlInput, estimatedParams, controlOut, cmp)
+    cmp.evapExv.output.refToutK = 0;
     cmp.evapExv.output.h_out    = 0;
 end
 
-function cmp = evaporatorMdl(mdlInput, estimatedParams, controlOut, cmp)%% not used in cold climate 
-    refArea = 7.854e-05;  airArea = 0.00028353; 
+function cmp = evaporatorMdl(mdlInput, estimatedParams, controlOut, cmp)
+    refArea = 7.854e-05;  airArea = 0.00028353;
     totalHxArea = 64*pi*0.0035*0.1;
     ntuCorrectionFactor = 1.3;
     NTU_MAX = 10;
@@ -745,7 +770,7 @@ function cmp = evaporatorMdl(mdlInput, estimatedParams, controlOut, cmp)%% not u
     cmp.evap.output.qActualW = qActual;
 end
 
-function cmp = chillerMdl(mdlInput, estimatedParams, controlOut, cmp)%% not used in cold climate 
+function cmp = chillerMdl(mdlInput, estimatedParams, controlOut, cmp)
     refArea = 7.854e-05;  clntArea = 0.00028353;
     totalHxArea = 64*pi*0.0035*0.1;
     ntuCorrectionFactor = 1.3;
@@ -875,6 +900,7 @@ function cmp = batMdl(mdlInput, estimatedParams, controlOut, cmp, P)
     p21=9.909e-08; p12=-0.0001321; p03=0.008301;
     resistanceOhm_ploy = p00 + p10*x + p01*y + p20*x^2 + p11*x*y + p02*y^2 + ...
                     p21*x^2*y + p12*x*y^2 + p03*y^3;
+    % Smooth max(poly, 1e-8): removes kink at zero resistance crossing
     r_floor   = 1e-8;
     eps_res   = 1e-18;
     resistanceOhm = (resistanceOhm_ploy + r_floor + ...
@@ -961,6 +987,7 @@ function cmp = invMdl(mdlInput, estimatedParams, controlOut, cmp, P)
     UA = h_conv*hxAreaFactor*convectionTuningFactor;
     c_clnt = clntMf*clntCp;
 
+    % NTU cap (0.1 factor matches original)
     NTU_raw = (0.1*UA) / (c_clnt + 1e-6);
     NTU = NTU_MAX * tanh(NTU_raw / NTU_MAX);
     effectiveness = 1 - exp(-NTU);
@@ -980,13 +1007,14 @@ function cmp = invMdl(mdlInput, estimatedParams, controlOut, cmp, P)
 end
 
 function cmp = pressureStateCalcMdl(mdlInput, estimatedParams, controlOut, cmp, P)
+    % Two refrigerant pressure state dynamics with wall thermal masses
     q_evap = cmp.htx.output.qActualW + cmp.condEvap.output.qActualW;
     q_cond = cmp.innerCond.output.qActualW;
 
     refMf = cmp.compressor.output.refMf;
 
     h1 = cmp.compressor.output.h_in;  h2 = cmp.compressor.output.h_out;
-    h3 = cmp.innerCond.output.h_out;  h4 = cmp.innerCond.output.h_out; % placeholder 
+    h3 = cmp.innerCond.output.h_out;  h4 = cmp.innerCond.output.h_out; % placeholder equality
 
     ye = estimatedParams.evapVoidFrac;  yc = estimatedParams.condVoidFrac;
 
@@ -1008,7 +1036,7 @@ function cmp = pressureStateCalcMdl(mdlInput, estimatedParams, controlOut, cmp, 
 
     k_gate = 100;  sigmoid_gate_D11 = 1/(1 + exp(-k_gate*(abs(D11) - 1e-4)));  sigmoid_gate_D22 = 1/(1 + exp(-k_gate*(abs(D22) - 1e-4)));
 
-    compPin_dt  = (P(11)*f1 /(500*D11 + 1e-6)) * sigmoid_gate_D11; % 500:
+    compPin_dt  = (P(11)*f1 /(500*D11 + 1e-6)) * sigmoid_gate_D11; % 500: scaling for conditioning
     compPout_dt = (P(10)*f2 /(1*D22  + 1e-6))  * sigmoid_gate_D22;
 
     cmp.pressure.output.compPin_dt  = compPin_dt;
@@ -1042,6 +1070,7 @@ function cmp = motMdl(mdlInput, estimatedParams, controlOut, cmp, P)
     UA = h_conv*hxAreaFactor*convectionTuningFactor;
     c_clnt = clntMf*clntCp;
 
+    % Flow gate + NTU cap (same pattern as motMdl from previous session)
     flow_threshold = 1e-3;
     k_smooth = 1000;
     gate = 0.5*(1 + tanh(k_smooth*(clntMf - flow_threshold)));

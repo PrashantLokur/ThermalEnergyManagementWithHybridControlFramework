@@ -3,7 +3,9 @@ function init_nmpc()
 repoRoot = fileparts(mfilename('fullpath'));
 addpath(repoRoot);
 addpath(fullfile(repoRoot, 'Data'));
-addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
+if ispc  % bundled CasADi is the Windows build; on macOS/Linux add your own CasADi to the path first
+    addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
+end
 
 if ~exist('casadi.SX', 'class')
     error('NMPC:missingDependency', ...

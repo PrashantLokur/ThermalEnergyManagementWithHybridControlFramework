@@ -3,7 +3,10 @@ repoRoot = fileparts(mfilename('fullpath'));
 addpath(repoRoot);
 addpath(fullfile(repoRoot, 'Data'));
 addpath(fullfile(repoRoot, 'Source Files'));
-addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
+if ispc  % bundled CasADi is the Windows build; on macOS/Linux add your own CasADi to the path first
+    addpath(fullfile(repoRoot, 'casadi-3.7.1-windows64-matlab2018b'));
+end
+addpath(genpath(fullfile(repoRoot, 'PlotingFunctions', 'matlab2tikz')));
 
 try
     val = py.CoolProp.CoolProp.PropsSI('C', 'T', 273.15, 'P', 101325, 'Air');
